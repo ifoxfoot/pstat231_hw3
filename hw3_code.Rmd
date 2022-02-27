@@ -4,7 +4,7 @@ author: "Iris Foxfoot"
 date: "2/20/2022"
 output: 
   html_document:
-    code_folding: show
+    code_folding: hide
 ---
 
 ```{r setup, include=FALSE}
@@ -93,12 +93,12 @@ bestlam_l
 predict(lasso_mod, type = "coefficients", s = bestlam_l)[1:13,] 
 ```
 
+No, the lasso model did not reduce any predictors' coefficient estimates to zero.
 
 #### D. Lasso Model MSE
 
 (2 pts) What is the training MSE for the lasso model corresponding to the optimal value of $\lambda$ selected by cross-validation? (2 pts) What is the test MSE for that same model? (1 pts) 
 
-# Comment on your findings.
 
 ```{r}
 #show training MSE
@@ -116,7 +116,8 @@ Again the training error is smaller than the test error, indicating some possibl
 
 (2 pts) Comment on the comparison between ridge and lasso estimates in this application.
 
-# Comment something
+Ridge and Lasso produced similar estimates. In this case the lasso model did not reduce any coefficient estimates to zero, but in both cases the CI for population was very small.
+
 
 ### Analyzing Drug Use
 
@@ -178,6 +179,12 @@ logistic <- glm(recent_cannabis_use ~ .,
 
 #show summary of model
 summary(logistic)
+
+#get probabilities (for later use in part L)
+log_prob_test = predict(logistic, drug_test, type = "response")
+
+#get prediction
+log_pred = prediction(log_prob_test, drug_test$recent_cannabis_use)
 ```
 
 #### E. Single tree
@@ -196,6 +203,260 @@ summary(single_tree)
 (2 pts) Use 5-fold cross-validation to select the best size of a tree which minimizes the cross-validation estimate of the test error rate. Use the function cv.tree, and set the argument FUN=prune.misclass. If multiple trees have the same minimum cross validated error rate, set best_size to the smallest tree size with that minimum rate. (2 pts) Report the best size you obtained.
 
 ```{r}
+#cross validate tree
+cv_tree = cv.tree(single_tree, FUN=prune.misclass, K=5)
 
+#show best size
+best_size = min(cv_tree$size[cv_tree$dev==min(cv_tree$dev)])
+best_size
+```
+
+The best size pruned tree is 6
+
+#### G. Prune and plot tree
+
+(g). (2 pts) Prune the tree to the best size selected in the previous part and plot the tree using the draw.tree function from the maptree package (see Lab 6). Set nodeinfo=TRUE. (2 pts) Which variable is split first in this decision tree?
+
+```{r}
+#prune the tree to the best size
+pruned_tree = prune.misclass(single_tree, best = best_size)
+
+#plot it
+maptree::draw.tree(pruned_tree, nodeinfo=TRUE)
+```
+
+The first split is on the variable `Country`
+
+#### H. Confusion matrix
+
+(2 pts) Compute and print the confusion matrix for the test data using the function table. (Hint: Recall that the table function takes in two arguments: the first argument is the true classes, and the second argument is the predicted classes. To generate the predicted classes for the test data, set type="class" in the predict function.) (2 pts) Calculate the true positive rate (TPR) and false positive rate (FPR) for the confusion matrix. Show how you arrived at your answer.
+
+```{r}
+#make predictions for test data
+yhat_drug = predict(pruned_tree, newdata = drug_test, type = "class")
+
+#make confusion matrix
+pt_error = table(pred = yhat_drug, truth = drug_test$recent_cannabis_use)
+
+#show confusion matrix
+pt_error
+
+#calc the true positive (number of observations predicted yes and with a true values of yes divided by total number of observations in test data set)
+true_p = as.data.frame(pt_error) %>% 
+  filter(pred == "Yes", truth == "Yes")
+
+true_p$Freq/nrow(drug_test)
+
+#calc the false positive rate (number of observations predicted yes but have true values of no divided by total number of observations in test data set)
+false_p = as.data.frame(pt_error) %>% 
+  filter(pred == "Yes", truth == "No")
+
+false_p$Freq/nrow(drug_test)
+```
+
+#### I. Boosted Tree
+
+(2 pts) Fit a boosting model to the training set with recent_cannabis_use as the response and the other variables as predictors. Use the gbm to fit a 1,000 tree boosted model and set the shrinkage value of 0.01. (2 pts) Which predictors appear to be the most important (Hint: use the summary function)?
+
+```{r}
+#convert depdendent var into 0 or 1 format for boosted tree model
+drug_train_boosted <- drug_train %>% 
+  mutate(recent_cannabis_use = case_when(recent_cannabis_use == "No" ~ 0, T ~ 1))
+
+#run the model
+boosted_tree <- gbm(recent_cannabis_use ~.,
+                    distribution = "bernoulli",
+                    data = drug_train_boosted,
+                    n.trees = 1000,
+                    shrinkage = 0.01)
+
+#summarise the model
+summary(boosted_tree)
+```
+
+Country, SS, and Age appear to be important predictors of cannabis use in this dataset.
+
+#### J. Random Forest
+
+(2 pts) Now fit a random forest model to the same training set from the previous problem. Set importance=TRUE but use the default parameter values for all other inputs to the randomForest function. Print the random forest object returned by the random forest function. (1 pts) What is the out-of-bag estimate of error? (1 pts) How many variables were randomly considered at each split in the trees? (1 pts) How many trees were used to fit the data? Look at the variable importance. (1 pts) Is the order of important variables similar for both boosting and random forest models?
+
+```{r}
+#run the model
+random_forest <- randomForest(recent_cannabis_use ~., 
+                              data = drug_train,
+                              importance = T)
+
+#look at model results
+random_forest
+
+#look at order of importance
+importance(random_forest)
+
+#plot importance
+varImpPlot(random_forest)
+```
+
+The out of bag estimate of error rate is 18.55%, the number of variables tried at each split is 3, and the number of trees is 500. When we look at the importance of variables, County, SS, and Age are again considered important in the random forest model, similar to the boosted tree model.
+
+#### K. Confusion Matrix for Boosted and RF Models
+
+(2 pts) Use both models to predict the response on the test data with a certain threshold. Predict that a person will have recent_cannabis_use = Yes if the predicted probability of recent_cannabis_use is greater than or equal to 20%. (2 pts) Print the confusion matrix for both the boosting and random forest models. (2 pts) In the random forest model, what fraction of the people predicted to use cannabis recently do in fact use cannabis recently? (Hint: use the predict function with type="prob" for random forests and type="resonpse" for the boosting algorithm. See Lab 7).
+
+```{r}
+#prediction of test data based on random forest model
+yhat.rf = predict(random_forest, 
+                  newdata = drug_test, 
+                  type = "prob")
+
+#create column that indicates "yes" if prob exceeds 20% and "no" if it is less than 20%
+yhat.rf <- as.data.frame(yhat.rf) %>% 
+  mutate(recent_cannabis_use = case_when(Yes >= 0.2 ~ "Yes", T ~ "No"))
+
+#confusion matrix on random forest predictions
+rf.err = table(pred = yhat.rf$recent_cannabis_use, 
+               truth = drug_test$recent_cannabis_use)
+
+#print confusion matrix
+rf.err
+
+#calc the true positive rate
+true_p.rf = as.data.frame(rf.err) %>% 
+  filter(pred == "Yes", truth == "Yes")
+
+#true positive rate
+true_p.rf$Freq/nrow(drug_test)
+
+
+#prediction of test data based on boosted tree model
+yhat.boosted = predict(boosted_tree, 
+                       newdata = drug_test, 
+                       type = "response")
+
+yhat.boosted <- as.data.frame(yhat.boosted) %>% 
+  mutate(recent_cannabis_use = case_when(yhat.boosted >= 0.2 ~ "Yes",
+                                         T ~ "No"))
+  
+  
+#confusion matrix on boosted tree predictions
+boost.err = table(pred = yhat.boosted$recent_cannabis_use, 
+                  truth = drug_test$recent_cannabis_use)
+
+#print confusion matrix
+boost.err
+```
+
+The random forest model has a true positive rate of 0.49. The fraction of correct predictions to correct answers is 385/785.
+
+#### L. ROC curves
+
+(4 pts) Plot the ROC curves for the logistic regression fit, the best pruned decision tree, the random forest, and the boosting trees that you obtained in previous parts. The ROC curves should be computed using the test data. (Hint: recall in Lab 3 we covered how to plot ROC curves for classification problems.)
+
+```{r}
+#get performance of logistic regresision
+log_perf <- performance(log_pred, measure = "tpr", x.measure = "fpr")
+
+#plot ROC curve
+plot(log_perf, col=2, lwd=3, main="Logisitic ROC curve")
+abline(0,1)
+
+# Calculate AUC
+auc = performance(log_pred, "auc")@y.values
+auc
+```
+
+
+```{r}
+#single tree
+
+#make list of predictions
+tree_predictions <- predict(pruned_tree, drug_test, type = "vector") %>% 
+  as.data.frame()
+
+#prediction
+tree_pred <- prediction(tree_predictions$Yes, drug_test$recent_cannabis_use)
+
+#performance
+tree_perf = performance(tree_pred, measure="tpr", x.measure="fpr")
+
+#roc curve
+plot(tree_perf, col=2, lwd=3, main="Pruned Tree ROC curve")
+abline(0,1)
+
+#Calculate AUC
+auc = performance(tree_pred, "auc")@y.values
+auc
+```
+
+
+```{r}
+#random forest (in this case we have calculated predictions above)
+rf_pred <- prediction(as.data.frame(yhat.rf)$Yes, drug_test$recent_cannabis_use)
+
+#performance
+rf_perf = performance(rf_pred, measure="tpr", x.measure="fpr")
+
+#roc curve
+plot(rf_perf, col=2, lwd=3, main="Random Forest ROC curve")
+abline(0,1)
+
+#Calculate AUC
+auc = performance(rf_pred, "auc")@y.values
+auc
+```
+
+
+```{r}
+#boosted tree (in this case we have calculated predictions above)
+
+#organize predictions of boosted tree model
+boost_pred <- prediction(yhat.boosted$yhat.boosted, drug_test$recent_cannabis_use)
+
+#performance
+boosted_perf = performance(boost_pred, measure="tpr", x.measure="fpr")
+
+#roc curve
+plot(boosted_perf, col=2, lwd=3, main="Boosted Trees ROC curve")
+abline(0,1)
+
+#Calculate AUC
+auc = performance(boost_pred, "auc")@y.values
+auc
+```
+
+
+#### M. AUC values
+
+(4 pts) Compute the AUC for the four models and print them. Which model has larger AUC?
+
+The boosted tree model has the highest AUC value, followed by the logistic regression model.
+
+### Bootstrapping
+
+In the 2020-2021 season, Stephen Curry, an NBA basketball player, had made 337 out of 801 three point shot attempts (42.1%). Use bootstrap resampling on a sequence of 337 1’s (makes) and 464 0’s (misses). For each bootstrap sample compute and save the sample mean (e.g. bootstrap FG% for the player). Use 1000 bootstrap samples to plot a histogram of those values. Compute the 99% bootstrap confidence interval for Stephen Curry’s “true” end-of-season
+FG% using the quantile function in R. Print the endpoints of this interval.
+
+```{r}
+#load needed package
+library(boot)
+
+#create vector to sample from based on Curry's shot record
+score_vec <- c(rep(1, 337), rep(0, 464))
+
+#make function
+mean_fun <- function(data, idx)
+{
+  df <- data[idx]
+  return(mean(df))
+}
+
+#bootstrap
+bootstrapped <- boot(score_vec, mean_fun, R = 1000)
+
+#plot it 
+plot(bootstrapped)
+
+
+#Compute the 99% bootstrap confidence interval for Stephen Curry’s “true” end-of-season FG% 
+boot.ci(bootstrapped, conf=0.99, type="bca")
 ```
 
